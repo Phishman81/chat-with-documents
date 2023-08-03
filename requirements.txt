@@ -1,4 +1,5 @@
 streamlit
+openai
 pandas
 pdf2image
 pytesseract
@@ -7,5 +8,3 @@ langchain
 python-dotenv
 vectorstore
 Pillow
-openai
-
