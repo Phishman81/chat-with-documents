@@ -7,4 +7,5 @@ langchain
 python-dotenv
 vectorstore
 Pillow
+openai
 
