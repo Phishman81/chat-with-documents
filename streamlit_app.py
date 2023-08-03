@@ -1,97 +1,79 @@
 import streamlit as st
-import pandas as pd
-from pdf2image import convert_from_path
-import pytesseract
-from PyPDF2 import PdfReader
-from langchain.agents import create_csv_agent
-from langchain.llms import OpenAI
-import os
-from apikey import apikey
-from langchain.document_loaders import TextLoader
-from langchain.indexes import VectorstoreIndexCreator
-import time
 
+# Get the password from Streamlit secrets
+correct_password = st.secrets["password"]
 
+password_placeholder = st.empty()
 
-os.environ['OPENAI_API_KEY'] = apikey
+# Create a text input for the password
+password = password_placeholder.text_input("Enter the password", type="password")
 
-llm = OpenAI(temperature=0.1)
+if password != correct_password:
+    st.error("The password you entered is incorrect.")
+    st.stop()
 
-def pdf_to_text(pdf_path):
-    # Step 1: Convert PDF to images
-    images = convert_from_path(pdf_path)
+st.title("Title of your Streamlit app")
 
-    with open('output.txt', 'w') as f:  # Open the text file in write mode
-        for i, image in enumerate(images):
-            # Save pages as images in the pdf
-            image_file = f'page{i}.jpg'
-            image.save(image_file, 'JPEG')
+import openai
+from transformers import T5Tokenizer, T5ForConditionalGeneration, GPT2TokenizerFast, pipeline
+import textwrap
+from concurrent.futures import ThreadPoolExecutor
+import warnings
 
-            # Step 2: Use OCR to extract text from images
-            text = pytesseract.image_to_string(image_file)
+warnings.filterwarnings("ignore")
 
-            f.write(text + '\n')  # Write the text to the file and add a newline for each page
+# Get the OpenAI key from Streamlit secrets
+openai.api_key = st.secrets["openai_api_key"]
 
-def load_csv_data(uploaded_file):
-    df = pd.read_csv(uploaded_file)
-    df.to_csv("uploaded_file.csv")
-    return df
+def count_tokens(input_data, max_tokens=20000, input_type='text'):
+    tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+    
+    if input_type == 'text':
+        tokens = tokenizer.tokenize(input_data)
+    elif input_type == 'tokens':
+        tokens = input_data
+    else:
+        raise ValueError("Invalid input_type. Must be 'text' or 'tokens'")
 
-def load_txt_data(uploaded_file):
-    with open('uploaded_file.txt', 'w') as f:
-        f.write(uploaded_file.getvalue().decode())
-    return uploaded_file.getvalue().decode()
+    token_count = len(tokens)
+    return token_count
 
-def load_pdf_data(uploaded_file):
-    with open('uploaded_file.pdf', 'wb') as f:
-        f.write(uploaded_file.getbuffer())
-    pdf = PdfReader('uploaded_file.pdf')
-    text = ""
-    for page in pdf.pages:
-        text += page.extract_text()
-    pdf_to_text('uploaded_file.pdf')
-    return text
+def summarize_chunk(classifier, chunk):
+    summary = classifier(chunk)
+    return summary[0]["summary_text"]
 
-def main():
-    st.title("Chat With Your Documents (csv, txt and pdf)")
+def summarize_text(text, model_name="t5-small", max_workers=8):
+    classifier = pipeline("summarization", model=model_name)
+    summarized_text = ""
 
-    file = st.file_uploader("Upload a file", type=["csv", "txt", "pdf"])
+    chunks = textwrap.wrap(text, width=500, break_long_words=False)
 
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        summaries = executor.map(lambda chunk: summarize_chunk(classifier, chunk), chunks)
+        summarized_text = " ".join(summaries)
 
-    if file is not None:
-        if file.type == "text/csv":
-            doc = "csv"
-            data = load_csv_data(file)
-            agent = create_csv_agent(OpenAI(temperature=0), 'uploaded_file.csv', verbose=True)
-            st.dataframe(data)
+    text_len_in_tokens = count_tokens(text)
+    print("Tokens in full transcript" + str(text_len_in_tokens))
 
-        elif file.type == "text/plain":
-            doc = "text"
-            data = load_txt_data(file)
-            loader = TextLoader('uploaded_file.txt')
-            index = VectorstoreIndexCreator().from_loaders([loader])
+    summary_token_len = count_tokens(summarized_text)
+    print("Summary Token Length:"+ str(summary_token_len))
 
-        elif file.type == "application/pdf":
-            doc = "text"
-            data = load_pdf_data(file)
-            loader = TextLoader('output.txt')
-            index = VectorstoreIndexCreator().from_loaders([loader])
+    return summarized_text.strip()
 
-        # do something with the data
+st.title("Transcription and Summary App")
 
+audio_file = st.file_uploader("Upload MP3 Audio File", type=["mp3"])
 
-        question = st.text_input("Once uploaded, you can chat with your document. Enter your question here:")
-        submit_button = st.button('Submit')
+if audio_file is not None:
+    with open("temp.mp3", "wb") as f:
+        f.write(audio_file.getbuffer())
+    try:
+        with open("temp.mp3", "rb") as audio:
+            transcription = openai.Audio.translate("whisper-1", audio)["text"]
+        st.write("Transcription: ", transcription)
+        
+        summarized_text = summarize_text(transcription)
+        st.write("Summarized Text: ", summarized_text)
 
-        if submit_button:
-            if doc == "text":
-                response = index.query(question)
-            else:
-                response = agent.run(question)
-
-            if response:
-                st.write(response)
-
-
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        st.write("An error occurred: ", str(e))
