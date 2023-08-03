@@ -1,1 +1,10 @@
+streamlit
+pandas
+pdf2image
+pytesseract
+PyPDF2
+langchain
+python-dotenv
+vectorstore
+Pillow
 
