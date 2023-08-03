@@ -1,99 +1,94 @@
-import streamlit as st
-import pandas as pd
-from pdf2image import convert_from_path
-import pytesseract
-from PyPDF2 import PdfReader
-from langchain.agents import create_csv_agent
-from langchain.llms import OpenAI
 import os
-from langchain.document_loaders import TextLoader
-from langchain.indexes import VectorstoreIndexCreator
-import time
+import tempfile
+from getpass import getpass
 
-# Access the OpenAI API key from secrets.toml
+from PIL import Image
+from langchain.agents.agent_toolkits import (
+    create_vectorstore_agent,
+    VectorStoreInfo,
+    VectorStoreToolkit,
+)
+from langchain.document_loaders import PyPDFLoader
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.llms import OpenAI
+from langchain.vectorstores import Chroma
+import streamlit as st
+
+# Set the title and subtitle of the app
+st.title('🦜🔗 PDF-Chat: Interact with Your PDFs in a Conversational Way')
+st.subheader('Load your PDF, ask questions, and receive answers directly from the document.')
+
+# Load the image 
+image = Image.open('PDF-Chat App.png')
+st.image(image)
+
+# Loading the Pdf file and return a temporary path for it 
+st.subheader('Upload your pdf')
+uploaded_file = st.file_uploader('', type=(['pdf',"tsv","csv","txt","tab","xlsx","xls"]))
+
+temp_file_path = os.getcwd()
+while uploaded_file is None:
+    x = 1
+
+# Add password input
+password = st.text_input("Enter Password", type='password')
+correct_password = st.secrets["password"]
+if password != correct_password:
+    st.error("The password you entered is incorrect. Please try again.")
+    st.stop()
+
+if uploaded_file is not None:
+    # Save the uploaded file to a temporary location
+    temp_dir = tempfile.TemporaryDirectory()
+    temp_file_path = os.path.join(temp_dir.name, uploaded_file.name)
+    with open(temp_file_path, "wb") as temp_file:
+        temp_file.write(uploaded_file.read())
+    st.write("Full path of the uploaded file:", temp_file_path)
+
+# Set APIkey for OpenAI Service from secrets.toml
 os.environ['OPENAI_API_KEY'] = st.secrets["openai_api_key"]
 
-llm = OpenAI(temperature=0.1)
+# Create instance of OpenAI LLM
+llm = OpenAI(temperature=0.1, verbose=True)
+embeddings = OpenAIEmbeddings()
 
-def pdf_to_text(pdf_path):
-    # Step 1: Convert PDF to images
-    images = convert_from_path(pdf_path)
+# Create and load PDF Loader
+loader = PyPDFLoader(temp_file_path)
+# Split pages from pdf 
+pages = loader.load_and_split()
 
-    with open('output.txt', 'w') as f:  # Open the text file in write mode
-        for i, image in enumerate(images):
-            # Save pages as images in the pdf
-            image_file = f'page{i}.jpg'
-            image.save(image_file, 'JPEG')
+# Load documents into vector database aka ChromaDB
+store = Chroma.from_documents(pages, embeddings, collection_name='Pdf')
 
-            # Step 2: Use OCR to extract text from images
-            text = pytesseract.image_to_string(image_file)
+# Create vectorstore info object
+vectorstore_info = VectorStoreInfo(
+    name="Pdf",
+    description=" A pdf file to answer your questions",
+    vectorstore=store
+)
+# Convert the document store into a langchain toolkit
+toolkit = VectorStoreToolkit(vectorstore_info=vectorstore_info)
 
-            f.write(text + '\n')  # Write the text to the file and add a newline for each page
+# Add the toolkit to an end-to-end LC
+agent_executor = create_vectorstore_agent(
+    llm=llm,
+    toolkit=toolkit,
+    verbose=True
+)
 
-def load_csv_data(uploaded_file):
-    df = pd.read_csv(uploaded_file)
-    df.to_csv("uploaded_file.csv")
-    return df
+# Create a text input box for the user
+prompt = st.text_input('Input your prompt here')
 
-def load_txt_data(uploaded_file):
-    with open('uploaded_file.txt', 'w') as f:
-        f.write(uploaded_file.getvalue().decode())
-    return uploaded_file.getvalue().decode()
+# If the user hits enter
+if prompt:
+    # Then pass the prompt to the LLM
+    response = agent_executor.run(prompt)
+    # ...and write it out to the screen
+    st.write(response)
 
-def load_pdf_data(uploaded_file):
-    with open('uploaded_file.pdf', 'wb') as f:
-        f.write(uploaded_file.getbuffer())
-    pdf = PdfReader('uploaded_file.pdf')
-    text = ""
-    for page in pdf.pages:
-        text += page.extract_text()
-    pdf_to_text('uploaded_file.pdf')
-    return text
-
-def main():
-    st.title("Chat With Your Documents (csv, txt and pdf)")
-
-    # Add a password input field
-    password = st.text_input("Enter the password to use this app:", type='password')
-    if password != st.secrets["password"]:
-        st.error("The password you entered is incorrect.")
-        st.stop()
-
-    file = st.file_uploader("Upload a file", type=["csv", "txt", "pdf"])
-
-    if file is not None:
-        if file.type == "text/csv":
-            doc = "csv"
-            data = load_csv_data(file)
-            agent = create_csv_agent(OpenAI(temperature=0), 'uploaded_file.csv', verbose=True)
-            st.dataframe(data)
-
-        elif file.type == "text/plain":
-            doc = "text"
-            data = load_txt_data(file)
-            loader = TextLoader('uploaded_file.txt')
-            index = VectorstoreIndexCreator().from_loaders([loader])
-
-        elif file.type == "application/pdf":
-            doc = "text"
-            data = load_pdf_data(file)
-            loader = TextLoader('output.txt')
-            index = VectorstoreIndexCreator().from_loaders([loader])
-
-        # do something with the data
-
-        question = st.text_input("Once uploaded, you can chat with your document. Enter your question here:")
-        submit_button = st.button('Submit')
-
-        if submit_button:
-            if doc == "text":
-                response = index.query(question)
-            else:
-                response = agent.run(question)
-
-            if response:
-                st.write(response)
-
-
-if __name__ == "__main__":
-    main()
+    # With a streamlit expander  
+    with st.expander('Document Similarity Search'):
+        # Find the relevant pages
+        search = store.similarity_search_with_score(prompt) 
+        # Write out the first 
+        st.write(search[0][0].page_content)
