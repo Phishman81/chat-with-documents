@@ -3,3 +3,4 @@ openai
 Pillow
 langchain
 PyPDF2
+PyPDF4
